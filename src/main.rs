@@ -64,6 +64,7 @@ fn to_post_data(data_list: &Vec<RssData>) -> EmbedData {
 /// Discordにpostする
 async fn send_rss(data: EmbedData) -> Result<(), Box<dyn Error>> {
     let client = Client::new();
-    client.post("").header(header::CONTENT_TYPE, "application/json").json(&data).send().await?;
+    let url = env!("DISCORD_WEBHOOK_URL");
+    client.post(url).header(header::CONTENT_TYPE, "application/json").json(&data).send().await?;
     Ok(())
 }
