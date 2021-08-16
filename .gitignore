@@ -1,0 +1,9 @@
+# dist
+/target
+
+# dependencies
+
+# editor
+.idea
+
+

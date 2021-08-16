@@ -1,0 +1,14 @@
+name: inform-weather-confirm-flow
+
+on:
+  pull_request:
+    branches:
+      - '*'
+
+jobs:
+  check_pull_request:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: test
+        run: cargo test --verbose
