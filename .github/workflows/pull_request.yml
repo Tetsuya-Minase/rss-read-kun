@@ -1,4 +1,4 @@
-name: inform-weather-confirm-flow
+name: rss-read-kun pr jobs
 
 on:
   pull_request:
