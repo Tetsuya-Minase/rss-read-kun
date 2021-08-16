@@ -34,7 +34,7 @@ async fn main() {
     send_rss(post_data).await;
 }
 
-/// rss読む
+/// Returns rss raw data or error
 async fn read_rss() -> Result<Channel, Box<dyn Error>> {
     let content = reqwest::get("https://zenn.dev/feed")
         .await?
@@ -44,14 +44,20 @@ async fn read_rss() -> Result<Channel, Box<dyn Error>> {
     Ok(channel)
 }
 
-/// rssのデータから必要なdataを取得する
+/// Return required Rss data from Channel
+/// 
+/// # Arguments
+/// * `rss_data` - Channel
 fn to_rss_data_list(rss_data: &Channel) -> Vec<RssData> {
     // 文字数制限で落ちる可能性があるので10件程度に丸める
     let (split_data, _) = rss_data.items.split_at(10);
     split_data.iter().map(|item| RssData{title: item.title.as_ref(), description: item.description.as_ref(), link: item.link.as_ref()}).collect()
 }
 
-/// Discordにpostする形式に変換する
+/// Format posted data from RSS data list
+/// 
+/// # Arguments
+/// * `data_list` - RssData list
 fn to_post_data(data_list: &Vec<RssData>) -> EmbedData {
     let embed_fields: Vec<EmbedField> = data_list.iter().map(|data| {
         let value_text: String = format!("{}\n[この記事を読む]({})", data.description.unwrap(), data.link.unwrap());
@@ -61,7 +67,10 @@ fn to_post_data(data_list: &Vec<RssData>) -> EmbedData {
     EmbedData{embeds}
 }
 
-/// Discordにpostする
+/// post rss data
+/// 
+/// # Arguments
+/// * `data` - posted embed data
 async fn send_rss(data: EmbedData) -> Result<(), Box<dyn Error>> {
     let client = Client::new();
     let url = env!("DISCORD_WEBHOOK_URL");
