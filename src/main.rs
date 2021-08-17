@@ -1,6 +1,6 @@
 use std::error::Error;
 use rss::{Channel};
-use reqwest::{Client, Response, header};
+use reqwest::{Client, header};
 use serde::{Serialize};
 
 /// RSSのデータを格納する
