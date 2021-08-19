@@ -25,7 +25,7 @@ jobs:
         run: gcloud auth configure-docker
 
       - name: build and push
-        run: |
+        run: |-
           docker build -t gcr.io/${{ env.PROJECT_ID }}/${{ env.SERVICE }}:${{ github.sha }} --build-arg URL=${{secrets.RSS_WEBHOOK}} ./
           docker push gcr.io/${{ env.PROJECT_ID }}/${{ env.SERVICE }}:${{ github.sha }}
         
