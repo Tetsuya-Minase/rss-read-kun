@@ -26,8 +26,8 @@ jobs:
 
       - name: build and push
         run: |
-          docker build -t ${{ env.service }}:${{ github.sha }} --build-arg URL=${{secrets.RSS_WEBHOOK}} ./
-          docker push ${{ env.service }}:${{ github.sha }}
+          docker build -t ${{ env.SERVICE }}:${{ github.sha }} --build-arg URL=${{secrets.RSS_WEBHOOK}} ./
+          docker push ${{ env.SERVICE }}:${{ github.sha }}
         
       - name: deploy to cloud run
         id: deploy
