@@ -42,8 +42,8 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .service(get)
     })
-        // ローカルホストのport8080で起動
-        .bind("127.0.0.1:8080")?
+        // port8080で起動
+        .bind("0.0.0.0:8080")?
         .run()
         .await
 }
