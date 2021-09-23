@@ -1,7 +1,8 @@
 use std::error::Error;
 use rss::{Channel};
-use reqwest::{Client, header};
 use serde::{Serialize};
+
+pub mod http_client;
 
 /// RSSのデータを格納する
 struct RssData<'a> {
@@ -28,20 +29,11 @@ struct EmbedData {
 
 #[tokio::main]
 async fn main() {
-    let rss_data = read_rss().await.unwrap();
+    let rss_data = http_client::get("https://zenn.dev/feed").await.unwrap();
     let data_list:Vec<RssData>  = to_rss_data_list(&rss_data);
     let post_data = to_post_data(&data_list);
-    send_rss(post_data).await;
-}
-
-/// Returns rss raw data or error
-async fn read_rss() -> Result<Channel, Box<dyn Error>> {
-    let content = reqwest::get("https://zenn.dev/feed")
-        .await?
-        .bytes()
-        .await?;
-    let channel = Channel::read_from(&content[..])?;
-    Ok(channel)
+    let url = env!("DISCORD_WEBHOOK_URL");
+    http_client::post(&url, &post_data).await;
 }
 
 /// Return required Rss data from Channel
@@ -65,15 +57,4 @@ fn to_post_data(data_list: &Vec<RssData>) -> EmbedData {
     }).collect();
     let embeds = [Embed {title: String::from("Zenn trend feed"), url: String::from("https://zenn.dev"), fields: embed_fields}].to_vec();
     EmbedData{embeds}
-}
-
-/// post rss data
-/// 
-/// # Arguments
-/// * `data` - posted embed data
-async fn send_rss(data: EmbedData) -> Result<(), Box<dyn Error>> {
-    let client = Client::new();
-    let url = env!("DISCORD_WEBHOOK_URL");
-    client.post(url).header(header::CONTENT_TYPE, "application/json").json(&data).send().await?;
-    Ok(())
 }
