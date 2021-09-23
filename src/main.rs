@@ -1,6 +1,7 @@
 use std::error::Error;
 use rss::{Channel};
 use serde::{Serialize};
+use actix_web::{get, post, put, delete, App, HttpResponse, HttpServer, Responder};
 
 pub mod http_client;
 
@@ -27,13 +28,35 @@ struct EmbedData {
     embeds: Vec<Embed>
 }
 
-#[tokio::main]
-async fn main() {
-    let rss_data = http_client::get("https://zenn.dev/feed").await.unwrap();
+#[get("/")]
+async fn get() -> impl Responder {
+    let rss_data = read_rss().await.unwrap();
     let data_list:Vec<RssData>  = to_rss_data_list(&rss_data);
     let post_data = to_post_data(&data_list);
-    let url = env!("DISCORD_WEBHOOK_URL");
-    http_client::post(&url, &post_data).await;
+    send_rss(post_data).await;
+    HttpResponse::Ok().body("ok")
+}
+
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
+    HttpServer::new(|| {
+        App::new()
+            .service(get)
+    })
+        // port8080で起動
+        .bind("0.0.0.0:8080")?
+        .run()
+        .await
+}
+
+/// Returns rss raw data or error
+async fn read_rss() -> Result<Channel, Box<dyn Error>> {
+    let content = reqwest::get("https://zenn.dev/feed")
+        .await?
+        .bytes()
+        .await?;
+    let channel = Channel::read_from(&content[..])?;
+    Ok(channel)
 }
 
 /// Return required Rss data from Channel
