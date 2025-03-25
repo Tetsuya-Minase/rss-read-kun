@@ -6,10 +6,11 @@ pub struct GeminiResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Candidate {
     pub content: Content,
-    pub finishReason: String,
-    pub avgLogprobs: f64,
+    pub finish_reason: String,
+    pub avg_logprobs: f64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
