@@ -1,8 +1,11 @@
-use rss::{Channel};
 use actix_web::{get, App, HttpResponse, HttpServer, Responder};
+use dotenvy::dotenv;
+use std::env;
+use crate::model::rss_summary::ArticlesResponse;
 
 pub mod http_client;
 pub mod model;
+pub mod rss_summary;
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -20,32 +23,28 @@ async fn main() -> std::io::Result<()> {
 /// handling get request 
 #[get("/")]
 async fn get() -> impl Responder {
+    dotenv().ok();
     let rss_data = http_client::get("https://zenn.dev/feed").await.unwrap();
-    let data_list:Vec<model::rss_data::RssData>  = to_rss_data_list(&rss_data);
-    let post_data = to_post_data(&data_list);
-    let discord_url = env!("DISCORD_WEBHOOK_URL");
-    let _ = http_client::post(discord_url, &post_data).await;
+    let rss_summary = rss_summary::fetch_rss_summary(&rss_data).await;
+    let post_data = to_post_data(&rss_summary);
+    let discord_url = env::var("DISCORD_WEBHOOK_URL").unwrap_or(String::from(""));
+    let _ = http_client::post(&discord_url, &post_data).await;
     HttpResponse::NoContent()
 }
 
-/// Return required Rss data from Channel
-/// 
-/// # Arguments
-/// * `rss_data` - Channel
-fn to_rss_data_list(rss_data: &Channel) -> Vec<model::rss_data::RssData> {
-    // 文字数制限で落ちる可能性があるので10件程度に丸める
-    let (split_data, _) = rss_data.items.split_at(10);
-    split_data.iter().map(|item| model::rss_data::RssData{title: item.title.as_ref(), description: item.description.as_ref(), link: item.link.as_ref()}).collect()
-}
-
 /// Format posted data from RSS data list
-/// 
+///
 /// # Arguments
 /// * `data_list` - RssData list
-fn to_post_data(data_list: &Vec<model::rss_data::RssData>) -> model::embed::EmbedData {
-    let embed_fields: Vec<model::embed::EmbedField> = data_list.iter().map(|data| {
-        let value_text: String = format!("{}\n[この記事を読む]({})", data.description.unwrap(), data.link.unwrap());
-        model::embed::EmbedField{name: data.title.unwrap().clone(), value: value_text}
+fn to_post_data(articles_response: &ArticlesResponse) -> model::embed::EmbedData {
+    let embed_fields: Vec<model::embed::EmbedField> = articles_response.data.summary.iter().map(|category| {
+        let category_name = category.category_map.keys().next().unwrap().clone();
+        let value_text = category.category_map.values().map(|category_details| {
+            category_details.articles.iter().map(|article| {
+                format!("{}\n[{}]({})", article.description, article.title, article.link)
+            }).collect::<Vec<String>>().join("\n")
+        }).collect::<Vec<String>>().join("\n");
+        model::embed::EmbedField{name: category_name, value: value_text}
     }).collect();
     let embeds = [model::embed::Embed {title: String::from("Zenn trend feed"), url: String::from("https://zenn.dev"), fields: embed_fields}].to_vec();
     model::embed::EmbedData{embeds}
