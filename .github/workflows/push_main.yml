@@ -39,7 +39,7 @@ jobs:
           env_vars: |
             DISCORD_WEBHOOK_URL=${{secrets.RSS_WEBHOOK}}
             GEMINI_API_URL=${{secrets.GEMINI_API_URL}}
-            SUMMRAY_PROMPT=${{secrets.SUMMRAY_PROMPT}}
+            SUMMARY_PROMPT=${{secrets.SUMMARY_PROMPT}}
       - name: notice-failure
         if: failure()
         run: |
