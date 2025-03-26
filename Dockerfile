@@ -1,4 +1,4 @@
-FROM rust:1.54.0
+FROM rust:1.85.1
 ARG URL
 WORKDIR /app
 COPY . .
