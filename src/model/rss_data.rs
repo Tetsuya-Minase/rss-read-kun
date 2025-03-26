@@ -1,3 +1,6 @@
+use serde::Serialize;
+
+#[derive(Serialize, Debug)]
 pub struct RssData<'a> {
     pub title:Option<&'a String>,
     pub description: Option<&'a String>,

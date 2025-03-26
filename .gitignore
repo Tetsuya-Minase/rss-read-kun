@@ -1,7 +1,8 @@
 # dist
 /target
 
-# dependencies
+# settings
+.env
 
 # editor
 .idea
