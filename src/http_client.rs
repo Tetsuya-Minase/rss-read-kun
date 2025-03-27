@@ -20,12 +20,19 @@ pub async fn get(url: &str) -> Result<Channel, Box<dyn Error>> {
 /// * `body` - request body
 pub async fn post<T: Serialize>(url: &str, body: &T) -> Result<(), Box<dyn Error>> {
     let client = Client::new();
-    client
+    let response = client
         .post(url)
         .header(header::CONTENT_TYPE, "application/json")
         .json(body)
         .send()
         .await?;
+    if !response.status().is_success() {
+        match response.json::<serde_json::Value>().await {
+            Ok(json) => eprintln!("Failed to post data: {}", json),
+            Err(e) => eprintln!("Failed to parse response: {}", e),
+        }
+        panic!()
+    }
     Ok(())
 }
 

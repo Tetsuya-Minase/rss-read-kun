@@ -8,7 +8,6 @@ pub struct EmbedField {
 #[derive(Serialize, Debug, Clone)]
 pub struct Embed {
     pub title: String,
-    pub url: String,
     pub fields: Vec<EmbedField>
 }
 #[derive(Serialize, Debug)]
