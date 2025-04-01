@@ -59,7 +59,6 @@ fn to_post_data(articles_response: &ArticlesResponse) -> EmbedData {
     }).collect();
     if embed_fields.len() > 10 {
         warn!("Embed fields exceed 10, truncating to 10(count: {})", embed_fields.len());
-        // 10個以上のEmbedFieldがある場合は、最初の10個だけを取得
         let embed_fields = &embed_fields[..10];
         EmbedData { embeds: embed_fields.to_vec() }
     } else {
