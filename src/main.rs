@@ -1,6 +1,7 @@
 use actix_web::{get, App, HttpResponse, HttpServer, Responder};
 use dotenvy::dotenv;
 use std::env;
+use log::{warn};
 use crate::model::embed::{Embed, EmbedData, EmbedField};
 use crate::model::rss_summary::ArticlesResponse;
 
@@ -56,6 +57,11 @@ fn to_post_data(articles_response: &ArticlesResponse) -> EmbedData {
             Embed { title: category_name.clone(), fields: embed_field }
         })
     }).collect();
-    let embed_data = EmbedData { embeds: embed_fields };
-    embed_data
+    if embed_fields.len() > 10 {
+        warn!("Embed fields exceed 10, truncating to 10(count: {})", embed_fields.len());
+        let truncated_fields = &embed_fields[..10];
+        EmbedData { embeds: truncated_fields.to_vec() }
+    } else {
+        EmbedData { embeds: embed_fields }
+    }
 }
