@@ -59,8 +59,8 @@ fn to_post_data(articles_response: &ArticlesResponse) -> EmbedData {
     }).collect();
     if embed_fields.len() > 10 {
         warn!("Embed fields exceed 10, truncating to 10(count: {})", embed_fields.len());
-        let embed_fields = &embed_fields[..10];
-        EmbedData { embeds: embed_fields.to_vec() }
+        let truncated_fields = &embed_fields[..10];
+        EmbedData { embeds: truncated_fields.to_vec() }
     } else {
         EmbedData { embeds: embed_fields }
     }
