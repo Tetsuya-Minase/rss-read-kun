@@ -1567,6 +1567,7 @@ dependencies = [
  "actix-web",
  "base64",
  "dotenvy",
+ "log",
  "reqwest",
  "rss",
  "serde",
