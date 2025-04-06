@@ -1,67 +1,79 @@
-use actix_web::{get, App, HttpResponse, HttpServer, Responder};
+use actix_web::{web, App, HttpServer};
 use dotenvy::dotenv;
+use log::{error, info};
 use std::env;
-use log::{warn};
-use crate::model::embed::{Embed, EmbedData, EmbedField};
-use crate::model::rss_summary::ArticlesResponse;
+use std::sync::Arc;
 
-pub mod http_client;
-pub mod model;
-pub mod rss_summary;
+use crate::application::use_case::fetch_and_summarize::FetchAndSummarizeUseCase;
+use crate::domain::rss_summary::RssSummaryService;
+use crate::infrastructure::discord::notification_service::DiscordNotificationService;
+use crate::infrastructure::event::in_memory_event_publisher::{InMemoryEventPublisher, LoggingEventSubscriber};
+use crate::infrastructure::gemini::ai_service::GeminiAiService;
+use crate::infrastructure::http_client::HttpClientImpl;
+use crate::infrastructure::repository::http_rss_repository::HttpRssRepository;
+use crate::presentation::http::handlers::handle_get_request;
+
+mod application;
+mod domain;
+mod infrastructure;
+mod presentation;
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    HttpServer::new(|| {
+    // ロガーの初期化
+    env_logger::init();
+    info!("Starting RSS Read Kun server...");
+
+    // 環境変数の読み込み
+    if let Err(e) = dotenv() {
+        error!("Failed to load .env file: {}", e);
+    }
+
+    // 依存関係の設定
+    let http_client = HttpClientImpl::new();
+    
+    // RSSリポジトリの初期化
+    let rss_repository = HttpRssRepository::new(http_client.clone());
+    
+    // Gemini APIのURLを取得
+    let gemini_url = env::var("GEMINI_API_URL").unwrap_or_else(|_| {
+        error!("GEMINI_API_URL is not set");
+        String::new()
+    });
+    
+    // AIサービスの初期化
+    let _ai_service = GeminiAiService::new(http_client.clone(), gemini_url);
+    
+    // RSSサマリーサービスの初期化
+    let summary_service = crate::application::rss_summary_service::RssSummaryServiceImpl::new(http_client.clone());
+    
+    // Discord通知サービスの初期化
+    let discord_url = env::var("DISCORD_WEBHOOK_URL").unwrap_or_else(|_| {
+        error!("DISCORD_WEBHOOK_URL is not set");
+        String::new()
+    });
+    
+    let notification_service = DiscordNotificationService::new(http_client.clone(), discord_url);
+    
+    // イベントパブリッシャーの初期化
+    let event_publisher = InMemoryEventPublisher::new();
+    event_publisher.add_subscriber(LoggingEventSubscriber);
+    
+    // ユースケースの初期化
+    let use_case = Arc::new(FetchAndSummarizeUseCase::new(
+        rss_repository,
+        summary_service,
+        notification_service,
+        event_publisher,
+    ));
+
+    // サーバーの起動
+    HttpServer::new(move || {
         App::new()
-            .service(get)
+            .app_data(web::Data::new(use_case.clone()))
+            .service(handle_get_request)
     })
-        // port8080で起動
-        .bind("0.0.0.0:8080")?
-        .run()
-        .await
-}
-
-
-/// handling get request 
-#[get("/")]
-async fn get() -> impl Responder {
-    dotenv().ok();
-    let rss_data = http_client::get("https://zenn.dev/feed").await.unwrap();
-    let rss_summary = rss_summary::fetch_rss_summary(&rss_data).await;
-    let post_data = to_post_data(&rss_summary);
-    let discord_url = env::var("DISCORD_WEBHOOK_URL").unwrap_or(String::from(""));
-    let discord_response = http_client::post(&discord_url, &post_data).await;
-    match discord_response {
-        Ok(_) => println!("Success to post data to discord"),
-        Err(e) => println!("Failed to post data to discord: {}", e)
-    }
-    HttpResponse::NoContent()
-}
-
-/// Format posted data from RSS data list
-///
-/// # Arguments
-/// * `data_list` - RssData list
-fn to_post_data(articles_response: &ArticlesResponse) -> EmbedData {
-    let embed_fields: Vec<Embed> = articles_response.data.summary.iter().flat_map(|category| {
-        // カテゴリ名を取得
-        let category_name = category.category_map.keys().next().unwrap().clone();
-        // カテゴリ内の記事を取得
-        category.category_map.values().map(move |category_details| {
-            let embed_field: Vec<EmbedField> = category_details.articles.iter().map({
-                move |article| {
-                    let value_string = format!("{}\n[この記事を読む]({})", article.description, article.link);
-                    EmbedField { name: article.title.clone(), value: value_string }
-                }
-            }).collect();
-            Embed { title: category_name.clone(), fields: embed_field }
-        })
-    }).collect();
-    if embed_fields.len() > 10 {
-        warn!("Embed fields exceed 10, truncating to 10(count: {})", embed_fields.len());
-        let truncated_fields = &embed_fields[..10];
-        EmbedData { embeds: truncated_fields.to_vec() }
-    } else {
-        EmbedData { embeds: embed_fields }
-    }
+    .bind("0.0.0.0:8080")?
+    .run()
+    .await
 }
