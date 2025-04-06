@@ -48,7 +48,7 @@ pub trait HttpClient {
     ///
     /// # Arguments
     /// * `url` - リクエスト先のURL
-    async fn get_rss(&self, url: &str) -> Result<Channel, HttpClientError>;
+    async fn get(&self, url: &str) -> Result<Channel, HttpClientError>;
 
     /// POSTリクエストを送信する
     ///
@@ -91,7 +91,7 @@ impl Default for HttpClientImpl {
 }
 
 impl HttpClient for HttpClientImpl {
-    async fn get_rss(&self, url: &str) -> Result<Channel, HttpClientError> {
+    async fn get(&self, url: &str) -> Result<Channel, HttpClientError> {
         let response = reqwest::get(url).await?;
         let content = response.bytes().await?;
         let channel = Channel::read_from(&content[..])?;

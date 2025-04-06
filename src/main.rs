@@ -35,7 +35,7 @@ async fn handle_get_request() -> impl Responder {
 
     // RSSフィードの取得
     let rss_feed_url = "https://zenn.dev/feed";
-    let rss_data = match http_client.get_rss(rss_feed_url).await {
+    let rss_data = match http_client.get(rss_feed_url).await {
         Ok(data) => data,
         Err(e) => {
             error!("Failed to fetch RSS feed: {}", e);
