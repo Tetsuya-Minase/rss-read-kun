@@ -87,7 +87,7 @@ pub async fn fetch_rss_summary(rss_data: &Channel) -> Result<ArticlesResponse, R
         Ok(Some(p)) => p,
         Ok(None) => {
             warn!("No summary prompt found, using empty prompt");
-            String::new()
+            return Err(RssSummaryError::SummaryError("using empty prompt.".to_string()))
         }
         Err(e) => {
             error!("Error decoding config: {}", e);
