@@ -146,38 +146,3 @@ impl HttpClient for HttpClientImpl {
         Ok(response_json)
     }
 }
-
-/// レガシーAPIとの互換性のための関数
-/// 
-/// # Arguments
-/// * `url` - リクエスト先のURL
-pub async fn get(url: &str) -> Result<Channel, Box<dyn Error>> {
-    let client = HttpClientImpl::new();
-    let result = client.get_rss(url).await?;
-    Ok(result)
-}
-
-/// レガシーAPIとの互換性のための関数
-/// 
-/// # Arguments
-/// * `url` - リクエスト先のURL
-/// * `body` - リクエストボディ
-pub async fn post<T: Serialize>(url: &str, body: &T) -> Result<(), Box<dyn Error>> {
-    let client = HttpClientImpl::new();
-    let result = client.post(url, body).await?;
-    Ok(result)
-}
-
-/// レガシーAPIとの互換性のための関数
-/// 
-/// # Arguments
-/// * `url` - リクエスト先のURL
-/// * `body` - リクエストボディ
-pub async fn post_with_response<T: Serialize, R: for<'de> Deserialize<'de>>(
-    url: &str,
-    body: &T,
-) -> Result<R, Box<dyn Error>> {
-    let client = HttpClientImpl::new();
-    let result = client.post_with_response(url, body).await?;
-    Ok(result)
-}
