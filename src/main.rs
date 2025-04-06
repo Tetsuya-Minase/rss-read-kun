@@ -7,9 +7,10 @@ use crate::infrastructure::http_client::{HttpClient, HttpClientImpl};
 use crate::model::embed::{Embed, EmbedData, EmbedField};
 use crate::model::rss_summary::ArticlesResponse;
 
+mod application;
+mod domain;
 mod infrastructure;
 mod model;
-mod rss_summary;
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -44,7 +45,7 @@ async fn handle_get_request() -> impl Responder {
     };
 
     // RSSの要約取得
-    let rss_summary = match rss_summary::fetch_rss_summary(&rss_data).await {
+    let rss_summary = match application::rss_summary::fetch_rss_summary(&rss_data).await {
         Ok(summary) => summary,
         Err(e) => {
             error!("Failed to fetch RSS summary: {}", e);

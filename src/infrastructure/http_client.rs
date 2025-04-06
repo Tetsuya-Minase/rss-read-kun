@@ -62,11 +62,11 @@ pub trait HttpClient {
     /// # Arguments
     /// * `url` - リクエスト先のURL
     /// * `body` - リクエストボディ
-    async fn post_with_response<T: Serialize + ?Sized, R: for<'de> Deserialize<'de>>(
-        &self,
-        url: &str,
-        body: &T,
-    ) -> Result<R, HttpClientError>;
+    fn post_with_response<'a, T: Serialize + ?Sized + Sync, R: for<'de> Deserialize<'de>>(
+        &'a self,
+        url: &'a str,
+        body: &'a T,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<R, HttpClientError>> + Send + 'a>>;
 }
 
 /// HTTPクライアントの実装
@@ -119,30 +119,32 @@ impl HttpClient for HttpClientImpl {
         Ok(())
     }
 
-    async fn post_with_response<T: Serialize + ?Sized, R: for<'de> Deserialize<'de>>(
-        &self,
-        url: &str,
-        body: &T,
-    ) -> Result<R, HttpClientError> {
-        let response = self
-            .client
-            .post(url)
-            .header(header::CONTENT_TYPE, "application/json")
-            .json(body)
-            .send()
-            .await?;
+    fn post_with_response<'a, T: Serialize + ?Sized + Sync, R: for<'de> Deserialize<'de>>(
+        &'a self,
+        url: &'a str,
+        body: &'a T,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<R, HttpClientError>> + Send + 'a>> {
+        Box::pin(async move {
+            let response = self
+                .client
+                .post(url)
+                .header(header::CONTENT_TYPE, "application/json")
+                .json(body)
+                .send()
+                .await?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_message = match response.text().await {
-                Ok(text) => format!("Status: {}, Body: {}", status, text),
-                Err(_) => format!("Status: {}, Body: <unable to read>", status),
-            };
-            return Err(HttpClientError::ResponseError(error_message));
-        }
+            if !response.status().is_success() {
+                let status = response.status();
+                let error_message = match response.text().await {
+                    Ok(text) => format!("Status: {}, Body: {}", status, text),
+                    Err(_) => format!("Status: {}, Body: <unable to read>", status),
+                };
+                return Err(HttpClientError::ResponseError(error_message));
+            }
 
-        let response_text = response.text().await?;
-        let response_json = serde_json::from_str(&response_text)?;
-        Ok(response_json)
+            let response_text = response.text().await?;
+            let response_json = serde_json::from_str(&response_text)?;
+            Ok(response_json)
+        })
     }
 }
