@@ -4,12 +4,13 @@ use rss::Channel;
 use std::env;
 use std::error::Error;
 
+use crate::domain::ai_service::AiServiceError;
+use crate::domain::rss_data::RssData;
 use crate::domain::rss_summary::{RssSummaryError, RssSummaryService};
+use crate::domain::rss_summary::model::ArticlesResponse;
+use crate::infrastructure::gemini::{GeminiRequest, GeminiResponse};
+use crate::infrastructure::gemini::request::{Content, Part};
 use crate::infrastructure::http_client::HttpClient;
-use crate::model::gemini_request::{Content, GeminiRequest, Part};
-use crate::model::gemini_response::GeminiResponse;
-use crate::model::rss_data::RssData;
-use crate::model::rss_summary::ArticlesResponse;
 
 /// RSSサマリーサービスの実装
 pub struct RssSummaryServiceImpl<T: HttpClient> {
@@ -46,9 +47,9 @@ impl<T: HttpClient> RssSummaryServiceImpl<T> {
             .items
             .iter()
             .map(|item| RssData {
-                title: item.title.as_ref(),
-                description: item.description.as_ref(),
-                link: item.link.as_ref(),
+                title: item.title.as_ref().cloned(),
+                description: item.description.as_ref().cloned(),
+                link: item.link.as_ref().cloned(),
             })
             .collect()
     }
@@ -109,39 +110,37 @@ impl<T: HttpClient> RssSummaryServiceImpl<T> {
 }
 
 impl<T: HttpClient + Send + Sync + 'static> RssSummaryService for RssSummaryServiceImpl<T> {
-    fn fetch_summary<'a>(&'a self, rss_channel: &'a Channel) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ArticlesResponse, RssSummaryError>> + Send + 'a>> {
-        Box::pin(async move {
-            // RSSデータをモデルに変換
-            let rss_data_items = Self::convert_to_rss_data(rss_channel);
+    async fn fetch_summary(&self, rss_channel: &Channel) -> Result<ArticlesResponse, RssSummaryError> {
+        // RSSデータをモデルに変換
+        let rss_data_items = Self::convert_to_rss_data(rss_channel);
 
-            // プロンプトの取得
-            let prompt = match Self::get_decoded_config() {
-                Ok(Some(p)) => p,
-                Ok(None) => {
-                    warn!("No summary prompt found, using empty prompt");
-                    return Err(RssSummaryError::SummaryError("using empty prompt.".to_string()));
-                }
-                Err(e) => {
-                    error!("Error decoding config: {}", e);
-                    return Err(RssSummaryError::SummaryError(e.to_string()));
-                }
-            };
+        // プロンプトの取得
+        let prompt = match Self::get_decoded_config() {
+            Ok(Some(p)) => p,
+            Ok(None) => {
+                warn!("No summary prompt found, using empty prompt");
+                return Err(RssSummaryError::SummaryError("using empty prompt.".to_string()));
+            }
+            Err(e) => {
+                error!("Error decoding config: {}", e);
+                return Err(RssSummaryError::SummaryError(e.to_string()));
+            }
+        };
 
-            // Gemini API URLの取得
-            let url = Self::get_gemini_api_url()?;
+        // Gemini API URLの取得
+        let url = Self::get_gemini_api_url()?;
 
-            // Gemini APIリクエストの作成
-            let gemini_request_body = Self::create_gemini_request(&prompt, &rss_data_items)?;
+        // Gemini APIリクエストの作成
+        let gemini_request_body = Self::create_gemini_request(&prompt, &rss_data_items)?;
 
-            // Gemini APIへのリクエスト
-            let response: GeminiResponse = self
-                .http_client
-                .post_with_response(&url, &gemini_request_body)
-                .await
-                .map_err(|e| RssSummaryError::HttpError(e.to_string()))?;
+        // Gemini APIへのリクエスト
+        let response: GeminiResponse = self
+            .http_client
+            .post_with_response(&url, &gemini_request_body)
+            .await
+            .map_err(|e| RssSummaryError::HttpError(e.to_string()))?;
 
-            // レスポンスからサマリーを抽出
-            Self::extract_summary_from_response(&response)
-        })
+        // レスポンスからサマリーを抽出
+        Self::extract_summary_from_response(&response)
     }
 }

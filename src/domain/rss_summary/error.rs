@@ -56,12 +56,3 @@ impl<E: Error + 'static> From<Box<E>> for RssSummaryError {
         RssSummaryError::SummaryError(err.to_string())
     }
 }
-
-/// RSSサマリーサービスのトレイト
-pub trait RssSummaryService {
-    /// RSSフィードから要約を取得する
-    ///
-    /// # Arguments
-    /// * `rss_channel` - RSSチャンネルデータ
-    fn fetch_summary<'a>(&'a self, rss_channel: &'a rss::Channel) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<crate::model::rss_summary::ArticlesResponse, RssSummaryError>> + Send + 'a>>;
-}

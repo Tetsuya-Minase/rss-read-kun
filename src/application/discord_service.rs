@@ -1,13 +1,13 @@
 use log::warn;
-use crate::model::embed::{Embed, EmbedData, EmbedField};
-use crate::model::rss_summary::ArticlesResponse;
+use crate::domain::notification::{Notification, NotificationField};
+use crate::domain::rss_summary::model::ArticlesResponse;
 
-/// RSSの要約データからDiscord用のEmbedデータを作成する
+/// RSSの要約データから通知データを作成する
 ///
 /// # Arguments
 /// * `articles_response` - RSSの要約データ
-pub fn to_post_data(articles_response: &ArticlesResponse) -> EmbedData {
-    let embed_fields: Vec<Embed> = articles_response
+pub fn create_notifications(articles_response: &ArticlesResponse) -> Vec<Notification> {
+    articles_response
         .data
         .summary
         .iter()
@@ -23,7 +23,7 @@ pub fn to_post_data(articles_response: &ArticlesResponse) -> EmbedData {
                         .category_map
                         .values()
                         .map(move |category_details| {
-                            let embed_field: Vec<EmbedField> = category_details
+                            let notification_fields: Vec<NotificationField> = category_details
                                 .articles
                                 .iter()
                                 .map(|article| {
@@ -31,36 +31,38 @@ pub fn to_post_data(articles_response: &ArticlesResponse) -> EmbedData {
                                         "{}\n[この記事を読む]({})",
                                         article.description, article.link
                                     );
-                                    EmbedField {
+                                    NotificationField {
                                         name: article.title.clone(),
                                         value: value_string,
                                     }
                                 })
                                 .collect();
-                            Embed {
+
+                            Notification {
                                 title: category_name.clone(),
-                                fields: embed_field,
+                                fields: notification_fields,
                             }
                         })
                 })
                 .into_iter()
                 .flatten()
         })
-        .collect();
+        .collect::<Vec<Notification>>()
+}
 
-    // Discordの制限に合わせて10個までに制限
-    if embed_fields.len() > 10 {
+/// 通知データを制限する
+///
+/// # Arguments
+/// * `notifications` - 通知データのリスト
+/// * `limit` - 制限数
+pub fn limit_notifications(notifications: Vec<Notification>, limit: usize) -> Vec<Notification> {
+    if notifications.len() > limit {
         warn!(
-            "Embed fields exceed 10, truncating to 10 (count: {})",
-            embed_fields.len()
+            "Notifications exceed {}, truncating to {} (count: {})",
+            limit, limit, notifications.len()
         );
-        let truncated_fields = &embed_fields[..10];
-        EmbedData {
-            embeds: truncated_fields.to_vec(),
-        }
+        notifications[..limit].to_vec()
     } else {
-        EmbedData {
-            embeds: embed_fields,
-        }
+        notifications
     }
 }
