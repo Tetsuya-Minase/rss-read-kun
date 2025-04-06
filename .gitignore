@@ -3,6 +3,8 @@
 
 # settings
 .env
+.clinerules
+CLAUDE.md
 
 # editor
 .idea
