@@ -1,6 +1,6 @@
 use log::warn;
 use crate::domain::notification::{Notification, NotificationField};
-use crate::domain::rss_summary::model::ArticlesResponse;
+use crate::domain::model::rss_summary::ArticlesResponse;
 
 /// RSSの要約データから通知データを作成する
 ///

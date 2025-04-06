@@ -48,25 +48,25 @@ pub trait HttpClient {
     ///
     /// # Arguments
     /// * `url` - リクエスト先のURL
-    async fn get(&self, url: &str) -> Result<Channel, HttpClientError>;
+    fn get(&self, url: &str) -> impl std::future::Future<Output = Result<Channel, HttpClientError>> + Send;
 
     /// POSTリクエストを送信する
     ///
     /// # Arguments
     /// * `url` - リクエスト先のURL
     /// * `body` - リクエストボディ
-    async fn post<T: Serialize + ?Sized + Send + Sync>(&self, url: &str, body: &T) -> Result<(), HttpClientError>;
+    fn post<T: Serialize + ?Sized + Send + Sync>(&self, url: &str, body: &T) -> impl std::future::Future<Output = Result<(), HttpClientError>> + Send;
 
     /// POSTリクエストを送信し、レスポンスを取得する
     ///
     /// # Arguments
     /// * `url` - リクエスト先のURL
     /// * `body` - リクエストボディ
-    async fn post_with_response<T: Serialize + ?Sized + Send + Sync, R: for<'de> Deserialize<'de> + Send>(
+    fn post_with_response<T: Serialize + ?Sized + Send + Sync, R: for<'de> Deserialize<'de> + Send>(
         &self,
         url: &str,
         body: &T,
-    ) -> Result<R, HttpClientError>;
+    ) -> impl std::future::Future<Output = Result<R, HttpClientError>> + Send;
 }
 
 /// HTTPクライアントの実装
@@ -91,58 +91,64 @@ impl Default for HttpClientImpl {
 }
 
 impl HttpClient for HttpClientImpl {
-    async fn get(&self, url: &str) -> Result<Channel, HttpClientError> {
-        let response = reqwest::get(url).await?;
-        let content = response.bytes().await?;
-        let channel = Channel::read_from(&content[..])?;
-        Ok(channel)
-    }
-
-    async fn post<T: Serialize + ?Sized + Send + Sync>(&self, url: &str, body: &T) -> Result<(), HttpClientError> {
-        let response = self
-            .client
-            .post(url)
-            .header(header::CONTENT_TYPE, "application/json")
-            .json(body)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_message = match response.text().await {
-                Ok(text) => format!("Status: {}, Body: {}", status, text),
-                Err(_) => format!("Status: {}, Body: <unable to read>", status),
-            };
-            return Err(HttpClientError::ResponseError(error_message));
+    fn get(&self, url: &str) -> impl std::future::Future<Output = Result<Channel, HttpClientError>> + Send {
+        async move {
+            let response = self.client.get(url).send().await?;
+            let content = response.bytes().await?;
+            let channel = Channel::read_from(&content[..])?;
+            Ok(channel)
         }
-
-        Ok(())
     }
 
-    async fn post_with_response<T: Serialize + ?Sized + Send + Sync, R: for<'de> Deserialize<'de> + Send>(
+    fn post<T: Serialize + ?Sized + Send + Sync>(&self, url: &str, body: &T) -> impl std::future::Future<Output = Result<(), HttpClientError>> + Send {
+        async move {
+            let response = self
+                .client
+                .post(url)
+                .header(header::CONTENT_TYPE, "application/json")
+                .json(body)
+                .send()
+                .await?;
+
+            if !response.status().is_success() {
+                let status = response.status();
+                let error_message = match response.text().await {
+                    Ok(text) => format!("Status: {}, Body: {}", status, text),
+                    Err(_) => format!("Status: {}, Body: <unable to read>", status),
+                };
+                return Err(HttpClientError::ResponseError(error_message));
+            }
+
+            Ok(())
+        }
+    }
+
+    fn post_with_response<T: Serialize + ?Sized + Send + Sync, R: for<'de> Deserialize<'de> + Send>(
         &self,
         url: &str,
         body: &T,
-    ) -> Result<R, HttpClientError> {
-        let response = self
-            .client
-            .post(url)
-            .header(header::CONTENT_TYPE, "application/json")
-            .json(body)
-            .send()
-            .await?;
+    ) -> impl std::future::Future<Output = Result<R, HttpClientError>> + Send {
+        async move {
+            let response = self
+                .client
+                .post(url)
+                .header(header::CONTENT_TYPE, "application/json")
+                .json(body)
+                .send()
+                .await?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_message = match response.text().await {
-                Ok(text) => format!("Status: {}, Body: {}", status, text),
-                Err(_) => format!("Status: {}, Body: <unable to read>", status),
-            };
-            return Err(HttpClientError::ResponseError(error_message));
+            if !response.status().is_success() {
+                let status = response.status();
+                let error_message = match response.text().await {
+                    Ok(text) => format!("Status: {}, Body: {}", status, text),
+                    Err(_) => format!("Status: {}, Body: <unable to read>", status),
+                };
+                return Err(HttpClientError::ResponseError(error_message));
+            }
+
+            let response_text = response.text().await?;
+            let response_json = serde_json::from_str(&response_text)?;
+            Ok(response_json)
         }
-
-        let response_text = response.text().await?;
-        let response_json = serde_json::from_str(&response_text)?;
-        Ok(response_json)
     }
 }

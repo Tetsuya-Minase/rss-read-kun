@@ -1,6 +1,6 @@
 use crate::application::rss_summary_service::RssSummaryServiceImpl;
 use crate::domain::rss_summary::{RssSummaryError, RssSummaryService};
-use crate::domain::rss_summary::model::ArticlesResponse;
+use crate::domain::model::rss_summary::ArticlesResponse;
 use crate::infrastructure::http_client::HttpClientImpl;
 use rss::Channel;
 

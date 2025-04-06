@@ -1,5 +1,5 @@
 use crate::domain::rss_summary::error::RssSummaryError;
-use crate::domain::rss_summary::model::ArticlesResponse;
+use crate::domain::model::rss_summary::ArticlesResponse;
 use rss::Channel;
 
 /// RSSサマリーサービスのトレイト

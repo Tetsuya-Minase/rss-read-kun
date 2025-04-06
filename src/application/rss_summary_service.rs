@@ -5,9 +5,9 @@ use std::env;
 use std::error::Error;
 
 use crate::domain::ai_service::AiServiceError;
-use crate::domain::rss_data::RssData;
+use crate::domain::model::rss_data::RssData;
 use crate::domain::rss_summary::{RssSummaryError, RssSummaryService};
-use crate::domain::rss_summary::model::ArticlesResponse;
+use crate::domain::model::rss_summary::ArticlesResponse;
 use crate::infrastructure::gemini::{GeminiRequest, GeminiResponse};
 use crate::infrastructure::gemini::request::{Content, Part};
 use crate::infrastructure::http_client::HttpClient;
