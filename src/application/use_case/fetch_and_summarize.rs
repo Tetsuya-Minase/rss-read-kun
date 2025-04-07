@@ -1,9 +1,8 @@
 use log::{error, info};
-use rss::Channel;
 
 use crate::domain::event::rss_events::{EventPublisher, RssEvent};
 use crate::domain::model::rss_summary::ArticlesResponse;
-use crate::domain::notification::{Notification, NotificationService};
+use crate::domain::notification::{Notification, NotificationField, NotificationService};
 use crate::domain::repository::rss_repository::RssRepository;
 use crate::domain::rss_summary::{RssSummaryError, RssSummaryService};
 
@@ -175,23 +174,29 @@ where
                                             "{}\n[この記事を読む]({})",
                                             article.description, article.link
                                         );
-                                        Notification {
-                                            title: article.title.clone(),
-                                            fields: vec![crate::domain::notification::NotificationField {
-                                                name: category_name.clone(),
-                                                value: value_string,
-                                            }],
+                                        NotificationField {
+                                            name: article.title.clone(),
+                                            value: value_string
                                         }
+                                        // Notification {
+                                        //     title: category_name.clone(),
+                                        //     fields: vec![crate::domain::notification::NotificationField {
+                                        //         name: article.title.clone(),
+                                        //         value: value_string,
+                                        //     }],
+                                        // }
                                     })
                                     .collect::<Vec<_>>();
-
-                                notification_fields
+                                
+                                Notification {
+                                    title: category_name.clone(),
+                                    fields: notification_fields
+                                }
                             })
                     })
                     .into_iter()
                     .flatten()
             })
-            .flatten()
             .collect::<Vec<Notification>>();
 
         // 通知データの制限
