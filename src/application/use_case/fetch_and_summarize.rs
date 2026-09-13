@@ -87,6 +87,27 @@ where
         feed_url: &str,
         notification_limit: usize,
     ) -> Result<(), AppError> {
+        let result = self.execute_inner(feed_url, notification_limit).await;
+        if let Err(ref err) = result {
+            let error_notification =
+                crate::application::error_notification::create_error_notification(err);
+            if let Err(send_err) = self
+                .notification_service
+                .send_notifications(vec![error_notification])
+                .await
+            {
+                error!("Failed to send error notification: {}", send_err);
+            }
+        }
+        result
+    }
+
+    /// RSS処理の内部実行本体
+    async fn execute_inner(
+        &self,
+        feed_url: &str,
+        notification_limit: usize,
+    ) -> Result<(), AppError> {
         // RSSフィードの取得
         let rss_channel = self
             .rss_repository
@@ -205,5 +226,277 @@ where
         } else {
             notifications
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use crate::domain::model::rss_data::RssData;
+    use crate::domain::model::rss_summary::{Article, ArticlesData, Category, CategoryDetails};
+    use crate::domain::notification::NotificationError;
+    use crate::domain::repository::rss_repository::RssRepositoryError;
+    use rss::Channel;
+    use std::collections::{HashMap, VecDeque};
+    use std::sync::Mutex;
+
+    struct MockRssRepository {
+        feed_result: Mutex<Option<Result<Channel, RssRepositoryError>>>,
+    }
+
+    impl MockRssRepository {
+        fn new(result: Result<Channel, RssRepositoryError>) -> Self {
+            Self {
+                feed_result: Mutex::new(Some(result)),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl RssRepository for MockRssRepository {
+        async fn fetch_feed(&self, _url: &str) -> Result<Channel, RssRepositoryError> {
+            self.feed_result
+                .lock()
+                .unwrap()
+                .take()
+                .expect("fetch_feed called more than expected")
+        }
+
+        fn convert_to_rss_data(&self, _rss_channel: &Channel) -> Vec<RssData> {
+            vec![]
+        }
+    }
+
+    struct MockRssSummaryService {
+        summary_result: Mutex<Option<Result<ArticlesResponse, RssSummaryError>>>,
+    }
+
+    impl MockRssSummaryService {
+        fn new(result: Result<ArticlesResponse, RssSummaryError>) -> Self {
+            Self {
+                summary_result: Mutex::new(Some(result)),
+            }
+        }
+    }
+
+    impl RssSummaryService for MockRssSummaryService {
+        async fn fetch_summary(
+            &self,
+            _rss_channel: &Channel,
+        ) -> Result<ArticlesResponse, RssSummaryError> {
+            self.summary_result
+                .lock()
+                .unwrap()
+                .take()
+                .expect("fetch_summary called more than expected")
+        }
+    }
+
+    struct MockNotificationService {
+        calls: Mutex<Vec<Vec<Notification>>>,
+        responses: Mutex<VecDeque<Result<(), NotificationError>>>,
+    }
+
+    impl MockNotificationService {
+        fn new(responses: Vec<Result<(), NotificationError>>) -> Self {
+            Self {
+                calls: Mutex::new(Vec::new()),
+                responses: Mutex::new(VecDeque::from(responses)),
+            }
+        }
+
+        fn get_calls(&self) -> Vec<Vec<Notification>> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl NotificationService for MockNotificationService {
+        async fn send_notifications(
+            &self,
+            notifications: Vec<Notification>,
+        ) -> Result<(), NotificationError> {
+            self.calls.lock().unwrap().push(notifications);
+            self.responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or(Ok(()))
+        }
+    }
+
+    struct MockEventPublisher {
+        events: Mutex<Vec<RssEvent>>,
+    }
+
+    impl MockEventPublisher {
+        fn new() -> Self {
+            Self {
+                events: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl EventPublisher for MockEventPublisher {
+        fn publish(&self, event: RssEvent) {
+            self.events.lock().unwrap().push(event);
+        }
+    }
+
+    fn create_dummy_articles_response() -> ArticlesResponse {
+        let mut category_map = HashMap::new();
+        category_map.insert(
+            "Tech".to_string(),
+            CategoryDetails {
+                category_count: Some(1),
+                articles: vec![Article {
+                    title: "Test Article".to_string(),
+                    description: "Description".to_string(),
+                    link: "https://example.com/article".to_string(),
+                }],
+            },
+        );
+
+        ArticlesResponse {
+            message: "Success".to_string(),
+            data: ArticlesData {
+                total: 1,
+                summary: vec![Category { category_map }],
+            },
+        }
+    }
+
+    #[actix_web::test]
+    async fn test_t7_success_does_not_send_error_notification() {
+        let repo = MockRssRepository::new(Ok(Channel::default()));
+        let summary = MockRssSummaryService::new(Ok(create_dummy_articles_response()));
+        let notif = MockNotificationService::new(vec![Ok(())]);
+        let event = MockEventPublisher::new();
+
+        let use_case = FetchAndSummarizeUseCase::new(repo, summary, notif, event);
+        let result = use_case.execute("https://example.com/feed", 10).await;
+
+        assert!(result.is_ok());
+        let calls = use_case.notification_service.get_calls();
+        assert_eq!(calls.len(), 1, "send_notifications should be called exactly once for articles");
+        assert_eq!(calls[0][0].title, "Tech");
+    }
+
+    #[actix_web::test]
+    async fn test_t8_rss_error_sends_notification() {
+        let repo = MockRssRepository::new(Err(RssRepositoryError::FetchError("404 Not Found".to_string())));
+        let summary = MockRssSummaryService::new(Ok(create_dummy_articles_response()));
+        let notif = MockNotificationService::new(vec![Ok(())]);
+        let event = MockEventPublisher::new();
+
+        let use_case = FetchAndSummarizeUseCase::new(repo, summary, notif, event);
+        let result = use_case.execute("https://example.com/feed", 10).await;
+
+        assert!(matches!(result, Err(AppError::RssError(_))));
+        let calls = use_case.notification_service.get_calls();
+        assert_eq!(calls.len(), 1, "send_notifications should be called once for error notification");
+        assert_eq!(calls[0][0].title, "⚠️ RSS処理でエラーが発生しました");
+        assert_eq!(calls[0][0].fields[0].name, "RSSフィード取得エラー");
+        assert!(calls[0][0].fields[0].value.contains("404 Not Found"));
+    }
+
+    #[actix_web::test]
+    async fn test_t9_summary_error_sends_notification() {
+        let repo = MockRssRepository::new(Ok(Channel::default()));
+        let summary = MockRssSummaryService::new(Err(RssSummaryError::SummaryError("using empty prompt.".to_string())));
+        let notif = MockNotificationService::new(vec![Ok(())]);
+        let event = MockEventPublisher::new();
+
+        let use_case = FetchAndSummarizeUseCase::new(repo, summary, notif, event);
+        let result = use_case.execute("https://example.com/feed", 10).await;
+
+        assert!(matches!(result, Err(AppError::SummaryError(_))));
+        let calls = use_case.notification_service.get_calls();
+        assert_eq!(calls.len(), 1, "send_notifications should be called once for error notification");
+        assert_eq!(calls[0][0].title, "⚠️ RSS処理でエラーが発生しました");
+        assert_eq!(calls[0][0].fields[0].name, "要約生成エラー");
+        assert!(calls[0][0].fields[0].value.contains("using empty prompt."));
+    }
+
+    #[actix_web::test]
+    async fn test_t10_article_notification_error_tries_error_notification() {
+        let repo = MockRssRepository::new(Ok(Channel::default()));
+        let summary = MockRssSummaryService::new(Ok(create_dummy_articles_response()));
+        let notif = MockNotificationService::new(vec![
+            Err(NotificationError::SendError("Status: 429".to_string())),
+            Ok(()),
+        ]);
+        let event = MockEventPublisher::new();
+
+        let use_case = FetchAndSummarizeUseCase::new(repo, summary, notif, event);
+        let result = use_case.execute("https://example.com/feed", 10).await;
+
+        assert!(matches!(result, Err(AppError::NotificationError(_))));
+        let calls = use_case.notification_service.get_calls();
+        assert_eq!(calls.len(), 2, "send_notifications should be called twice (article + error)");
+        assert_eq!(calls[0][0].title, "Tech");
+        assert_eq!(calls[1][0].title, "⚠️ RSS処理でエラーが発生しました");
+        assert_eq!(calls[1][0].fields[0].name, "通知送信エラー");
+    }
+
+    #[actix_web::test]
+    async fn test_t11_error_notification_failure_returns_original_error() {
+        let repo = MockRssRepository::new(Err(RssRepositoryError::FetchError("connection failed".to_string())));
+        let summary = MockRssSummaryService::new(Ok(create_dummy_articles_response()));
+        // エラー通知の送信も失敗する設定
+        let notif = MockNotificationService::new(vec![
+            Err(NotificationError::SendError("Webhook down".to_string())),
+        ]);
+        let event = MockEventPublisher::new();
+
+        let use_case = FetchAndSummarizeUseCase::new(repo, summary, notif, event);
+        let result = use_case.execute("https://example.com/feed", 10).await;
+
+        // エラー通知失敗でも panic せず、元の RssError が返ること（P2不変条件）
+        match result {
+            Err(AppError::RssError(msg)) => assert!(msg.contains("connection failed")),
+            _ => panic!("Expected RssError, got {:?}", result),
+        }
+    }
+
+    #[actix_web::test]
+    async fn test_t12_long_error_message_is_truncated_within_1024() {
+        let long_msg = "x".repeat(1025);
+        let repo = MockRssRepository::new(Err(RssRepositoryError::FetchError(long_msg)));
+        let summary = MockRssSummaryService::new(Ok(create_dummy_articles_response()));
+        let notif = MockNotificationService::new(vec![Ok(())]);
+        let event = MockEventPublisher::new();
+
+        let use_case = FetchAndSummarizeUseCase::new(repo, summary, notif, event);
+        let _ = use_case.execute("https://example.com/feed", 10).await;
+
+        let calls = use_case.notification_service.get_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0][0].fields[0].value.chars().count(), 1024);
+    }
+
+    #[actix_web::test]
+    async fn test_p2_p3_invariants() {
+        // P3: send_notifications は最大2回
+        // 成功時: 1回
+        let repo = MockRssRepository::new(Ok(Channel::default()));
+        let summary = MockRssSummaryService::new(Ok(create_dummy_articles_response()));
+        let notif = MockNotificationService::new(vec![Ok(())]);
+        let event = MockEventPublisher::new();
+        let use_case = FetchAndSummarizeUseCase::new(repo, summary, notif, event);
+        let _ = use_case.execute("https://example.com/feed", 10).await;
+        assert!(use_case.notification_service.get_calls().len() <= 2);
+
+        // 記事通知エラー時: 2回（記事1回 + エラー1回）
+        let repo = MockRssRepository::new(Ok(Channel::default()));
+        let summary = MockRssSummaryService::new(Ok(create_dummy_articles_response()));
+        let notif = MockNotificationService::new(vec![
+            Err(NotificationError::SendError("Fail".to_string())),
+            Ok(()),
+        ]);
+        let event = MockEventPublisher::new();
+        let use_case = FetchAndSummarizeUseCase::new(repo, summary, notif, event);
+        let _ = use_case.execute("https://example.com/feed", 10).await;
+        assert_eq!(use_case.notification_service.get_calls().len(), 2);
     }
 }
