@@ -1,4 +1,5 @@
 pub mod discord_service;
+pub mod error_notification;
 pub mod rss_summary;
 pub mod rss_summary_service;
 pub mod use_case;
