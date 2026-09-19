@@ -8,7 +8,7 @@ use crate::application::use_case::fetch_and_summarize::FetchAndSummarizeUseCase;
 use crate::domain::rss_summary::RssSummaryService;
 use crate::infrastructure::discord::notification_service::DiscordNotificationService;
 use crate::infrastructure::event::in_memory_event_publisher::{InMemoryEventPublisher, LoggingEventSubscriber};
-use crate::infrastructure::gemini::ai_service::GeminiAiService;
+
 use crate::infrastructure::http_client::HttpClientImpl;
 use crate::infrastructure::repository::http_rss_repository::HttpRssRepository;
 use crate::presentation::http::handlers::handle_get_request;
@@ -34,15 +34,6 @@ async fn main() -> std::io::Result<()> {
     
     // RSSリポジトリの初期化
     let rss_repository = HttpRssRepository::new(http_client.clone());
-    
-    // Gemini APIのURLを取得
-    let gemini_url = env::var("GEMINI_API_URL").unwrap_or_else(|_| {
-        error!("GEMINI_API_URL is not set");
-        String::new()
-    });
-    
-    // AIサービスの初期化
-    let _ai_service = GeminiAiService::new(http_client.clone(), gemini_url);
     
     // RSSサマリーサービスの初期化
     let summary_service = crate::application::rss_summary_service::RssSummaryServiceImpl::new(http_client.clone());

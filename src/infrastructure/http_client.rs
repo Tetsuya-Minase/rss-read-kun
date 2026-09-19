@@ -67,6 +67,14 @@ pub trait HttpClient {
         url: &str,
         body: &T,
     ) -> impl std::future::Future<Output = Result<R, HttpClientError>> + Send;
+
+    /// POSTリクエストを送信し、レスポンスを取得する (ヘッダ付き)
+    fn post_with_response_and_headers<T: Serialize + ?Sized + Send + Sync, R: for<'de> Deserialize<'de> + Send>(
+        &self,
+        url: &str,
+        headers: Vec<(String, String)>,
+        body: &T,
+    ) -> impl std::future::Future<Output = Result<R, HttpClientError>> + Send;
 }
 
 /// HTTPクライアントの実装
@@ -136,6 +144,39 @@ impl HttpClient for HttpClientImpl {
                 .json(body)
                 .send()
                 .await?;
+
+            if !response.status().is_success() {
+                let status = response.status();
+                let error_message = match response.text().await {
+                    Ok(text) => format!("Status: {}, Body: {}", status, text),
+                    Err(_) => format!("Status: {}, Body: <unable to read>", status),
+                };
+                return Err(HttpClientError::ResponseError(error_message));
+            }
+
+            let response_text = response.text().await?;
+            let response_json = serde_json::from_str(&response_text)?;
+            Ok(response_json)
+        }
+    }
+
+    fn post_with_response_and_headers<T: Serialize + ?Sized + Send + Sync, R: for<'de> Deserialize<'de> + Send>(
+        &self,
+        url: &str,
+        headers: Vec<(String, String)>,
+        body: &T,
+    ) -> impl std::future::Future<Output = Result<R, HttpClientError>> + Send {
+        async move {
+            let mut request = self
+                .client
+                .post(url)
+                .header(header::CONTENT_TYPE, "application/json");
+            
+            for (k, v) in headers {
+                request = request.header(k, v);
+            }
+
+            let response = request.json(body).send().await?;
 
             if !response.status().is_success() {
                 let status = response.status();
