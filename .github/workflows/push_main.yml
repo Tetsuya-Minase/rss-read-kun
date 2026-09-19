@@ -38,7 +38,8 @@ jobs:
           region: ${{ env.REGION }}
           env_vars: |
             DISCORD_WEBHOOK_URL=${{secrets.RSS_WEBHOOK}}
-            GEMINI_API_URL=${{secrets.GEMINI_API_URL}}
+            GEMINI_API_KEY=${{secrets.GEMINI_API_KEY}}
+            GEMINI_MODEL=gemini-3.8-flash
             SUMMARY_PROMPT=${{secrets.SUMMARY_PROMPT}}
       - name: notice-failure
         if: failure()
