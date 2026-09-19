@@ -23,6 +23,7 @@ pub fn create_error_notification(error: &AppError) -> Notification {
 
     Notification {
         title: "⚠️ RSS処理でエラーが発生しました".to_string(),
+        description: None,
         fields: vec![NotificationField {
             name: field_name.to_string(),
             value: field_value,
@@ -39,6 +40,7 @@ mod tests {
         let err = AppError::RssError("connection timeout".to_string());
         let notif = create_error_notification(&err);
         assert_eq!(notif.title, "⚠️ RSS処理でエラーが発生しました");
+        assert_eq!(notif.description, None);
         assert_eq!(notif.fields.len(), 1);
         assert_eq!(notif.fields[0].name, "RSSフィード取得エラー");
         assert_eq!(notif.fields[0].value, "connection timeout");

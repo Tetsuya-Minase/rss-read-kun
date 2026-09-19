@@ -87,7 +87,7 @@ impl EventSubscriber for LoggingEventSubscriber {
                 info!(
                     "LoggingEventSubscriber: RSS summary generated with {} articles in {} categories",
                     summary.data.total,
-                    summary.data.category_count()
+                    summary.data.categories.len()
                 );
             }
             RssEvent::NotificationSent { count } => {
