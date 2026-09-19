@@ -4,7 +4,7 @@ use rss::Channel;
 use std::env;
 use std::error::Error;
 
-use crate::domain::ai_service::AiServiceError;
+
 use crate::domain::model::rss_data::RssData;
 use crate::domain::rss_summary::{RssSummaryError, RssSummaryService};
 use crate::domain::model::rss_summary::ArticlesResponse;
@@ -54,33 +54,12 @@ impl<T: HttpClient> RssSummaryServiceImpl<T> {
             .collect()
     }
 
-    /// Gemini APIのURLを取得する
-    fn get_gemini_api_url() -> Result<String, RssSummaryError> {
-        let url = env::var("GEMINI_API_URL").unwrap_or_else(|_| {
-            error!("GEMINI_API_URL is not set");
-            String::new()
-        });
-
-        if url.is_empty() {
-            return Err(RssSummaryError::EnvVarError(
-                "GEMINI_API_URL is empty".to_string(),
-            ));
-        }
-
-        Ok(url)
-    }
 
     /// Gemini APIリクエストを作成する
     fn create_gemini_request(prompt: &str, rss_data: &[RssData]) -> Result<GeminiRequest, RssSummaryError> {
         let rss_data_str = serde_json::to_string(rss_data)?;
         
-        Ok(GeminiRequest {
-            contents: vec![Content {
-                parts: vec![Part {
-                    text: format!("{}{}", prompt, rss_data_str),
-                }],
-            }],
-        })
+        Ok(GeminiRequest::new(format!("{}{}", prompt, rss_data_str)))
     }
 
     /// レスポンスからサマリーを抽出する
@@ -89,15 +68,23 @@ impl<T: HttpClient> RssSummaryServiceImpl<T> {
             .candidates
             .iter()
             .filter_map(|candidate| {
-                candidate.content.parts.iter().find_map(|part| {
-                    // code blockを削除
-                    let part_text = part.text.replace("```json", "").replace("```", "");
-                    match serde_json::from_str::<ArticlesResponse>(&part_text) {
-                        Ok(summary) => Some(summary),
-                        Err(e) => {
-                            error!("Failed to parse summary: {}", e);
-                            None
+                let content = candidate.content.as_ref()?;
+                content.parts.iter().find_map(|part| {
+                    if part.thought == Some(true) {
+                        return None;
+                    }
+                    if let Some(text) = &part.text {
+                        // code blockを削除
+                        let part_text = text.replace("```json", "").replace("```", "");
+                        match serde_json::from_str::<ArticlesResponse>(&part_text) {
+                            Ok(summary) => Some(summary),
+                            Err(e) => {
+                                error!("Failed to parse summary: {}", e);
+                                None
+                            }
                         }
+                    } else {
+                        None
                     }
                 })
             })
@@ -127,20 +114,238 @@ impl<T: HttpClient + Send + Sync + 'static> RssSummaryService for RssSummaryServ
             }
         };
 
+        // Gemini設定の取得
+        use crate::infrastructure::gemini::config::GeminiConfig;
+        let config = GeminiConfig::from_env()
+            .map_err(|e| RssSummaryError::EnvVarError(e.to_string()))?;
+
         // Gemini API URLの取得
-        let url = Self::get_gemini_api_url()?;
+        let url = config.endpoint_url();
 
         // Gemini APIリクエストの作成
         let gemini_request_body = Self::create_gemini_request(&prompt, &rss_data_items)?;
 
         // Gemini APIへのリクエスト
+        let headers = vec![("x-goog-api-key".to_string(), config.api_key)];
         let response: GeminiResponse = self
             .http_client
-            .post_with_response(&url, &gemini_request_body)
+            .post_with_response_and_headers(&url, headers, &gemini_request_body)
             .await
             .map_err(|e| RssSummaryError::HttpError(e.to_string()))?;
 
         // レスポンスからサマリーを抽出
         Self::extract_summary_from_response(&response)
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::infrastructure::gemini::response::{Candidate, Content, Part};
+    use crate::infrastructure::http_client::{HttpClient, HttpClientError};
+    use rss::Channel;
+
+    struct MockHttpClient;
+    impl HttpClient for MockHttpClient {
+        fn get(&self, _url: &str) -> impl std::future::Future<Output = Result<Channel, HttpClientError>> + Send { async { unimplemented!() } }
+        fn post<T: serde::Serialize + ?Sized + Send + Sync>(&self, _url: &str, _body: &T) -> impl std::future::Future<Output = Result<(), HttpClientError>> + Send { async { unimplemented!() } }
+        fn post_with_response<T: serde::Serialize + ?Sized + Send + Sync, R: for<'de> serde::Deserialize<'de> + Send>(&self, _url: &str, _body: &T) -> impl std::future::Future<Output = Result<R, HttpClientError>> + Send { async { unimplemented!() } }
+        fn post_with_response_and_headers<T: serde::Serialize + ?Sized + Send + Sync, R: for<'de> serde::Deserialize<'de> + Send>(&self, _url: &str, _headers: Vec<(String, String)>, _body: &T) -> impl std::future::Future<Output = Result<R, HttpClientError>> + Send { async { unimplemented!() } }
+    }
+
+    #[test]
+    fn test_t20_extract_summary_normal_json() {
+        let response = GeminiResponse {
+            candidates: vec![Candidate {
+                content: Some(Content {
+                    parts: vec![Part {
+                        text: Some(r#"{"message":"Success","data":{"total":1,"summary":[{"Tech":{"category_count":1,"articles":[{"title":"t","description":"d","link":"https://example.com/a"}]}}]}}"#.to_string()),
+                        thought: None,
+                        thought_signature: None,
+                    }],
+                    role: Some("model".to_string()),
+                }),
+                finish_reason: Some("STOP".to_string()),
+                avg_logprobs: None,
+            }],
+        };
+        let res = RssSummaryServiceImpl::<MockHttpClient>::extract_summary_from_response(&response);
+        assert!(res.is_ok());
+        let res = res.unwrap();
+        assert_eq!(res.message, "Success");
+        assert_eq!(res.data.total, 1);
+        assert_eq!(res.data.summary[0].get_name(), Some("Tech".to_string()));
+    }
+
+    #[test]
+    fn test_t21_extract_summary_with_code_fence() {
+        let response = GeminiResponse {
+            candidates: vec![Candidate {
+                content: Some(Content {
+                    parts: vec![Part {
+                        text: Some("```json\n{\"message\":\"Success\",\"data\":{\"total\":0,\"summary\":[]}}\n```".to_string()),
+                        thought: None,
+                        thought_signature: None,
+                    }],
+                    role: None,
+                }),
+                finish_reason: None,
+                avg_logprobs: None,
+            }],
+        };
+        let res = RssSummaryServiceImpl::<MockHttpClient>::extract_summary_from_response(&response);
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap().message, "Success");
+    }
+
+    #[test]
+    fn test_t22_extract_summary_ignores_thought() {
+        let response = GeminiResponse {
+            candidates: vec![Candidate {
+                content: Some(Content {
+                    parts: vec![
+                        Part {
+                            text: Some("考え中: JSONを組み立てる".to_string()),
+                            thought: Some(true),
+                            thought_signature: None,
+                        },
+                        Part {
+                            text: Some(r#"{"message":"Success","data":{"total":0,"summary":[]}}"#.to_string()),
+                            thought: None,
+                            thought_signature: None,
+                        }
+                    ],
+                    role: None,
+                }),
+                finish_reason: None,
+                avg_logprobs: None,
+            }],
+        };
+        let res = RssSummaryServiceImpl::<MockHttpClient>::extract_summary_from_response(&response);
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap().message, "Success");
+    }
+
+    #[test]
+    fn test_t23_extract_summary_empty_candidates() {
+        let response = GeminiResponse { candidates: vec![] };
+        let res = RssSummaryServiceImpl::<MockHttpClient>::extract_summary_from_response(&response);
+        assert!(res.is_err());
+        match res.unwrap_err() {
+            RssSummaryError::SummaryError(msg) => assert_eq!(msg, "Failed to extract summary from response"),
+            _ => panic!("Unexpected error type"),
+        }
+    }
+
+    #[test]
+    fn test_t24_extract_summary_invalid_json() {
+        let response = GeminiResponse {
+            candidates: vec![Candidate {
+                content: Some(Content {
+                    parts: vec![Part {
+                        text: Some("I cannot answer that.".to_string()),
+                        thought: None,
+                        thought_signature: None,
+                    }],
+                    role: None,
+                }),
+                finish_reason: None,
+                avg_logprobs: None,
+            }],
+        };
+        let res = RssSummaryServiceImpl::<MockHttpClient>::extract_summary_from_response(&response);
+        assert!(res.is_err());
+        match res.unwrap_err() {
+            RssSummaryError::SummaryError(msg) => assert_eq!(msg, "Failed to extract summary from response"),
+            _ => panic!("Unexpected error type"),
+        }
+    }
+
+    #[test]
+    fn test_p5_thought_text_never_extracted() {
+        let response = GeminiResponse {
+            candidates: vec![Candidate {
+                content: Some(Content {
+                    parts: vec![Part {
+                        text: Some(r#"{"message":"Danger","data":{"total":0,"summary":[]}}"#.to_string()),
+                        thought: Some(true),
+                        thought_signature: None,
+                    }],
+                    role: None,
+                }),
+                finish_reason: None,
+                avg_logprobs: None,
+            }],
+        };
+        let res = RssSummaryServiceImpl::<MockHttpClient>::extract_summary_from_response(&response);
+        assert!(res.is_err()); // Should not extract from thought part
+    }
+
+    #[actix_web::test]
+    async fn test_t25_t26_fetch_summary() {
+        use std::sync::{Arc, Mutex};
+        
+        struct MockHttpClientWithHeaders {
+            called: Arc<Mutex<usize>>,
+            url: Arc<Mutex<String>>,
+            headers: Arc<Mutex<Vec<(String, String)>>>,
+        }
+        impl HttpClient for MockHttpClientWithHeaders {
+            fn get(&self, _url: &str) -> impl std::future::Future<Output = Result<Channel, HttpClientError>> + Send { async { unimplemented!() } }
+            fn post<T: serde::Serialize + ?Sized + Send + Sync>(&self, _url: &str, _body: &T) -> impl std::future::Future<Output = Result<(), HttpClientError>> + Send { async { unimplemented!() } }
+            fn post_with_response<T: serde::Serialize + ?Sized + Send + Sync, R: for<'de> serde::Deserialize<'de> + Send>(&self, _url: &str, _body: &T) -> impl std::future::Future<Output = Result<R, HttpClientError>> + Send { async { unimplemented!() } }
+            fn post_with_response_and_headers<T: serde::Serialize + ?Sized + Send + Sync, R: for<'de> serde::Deserialize<'de> + Send>(&self, url: &str, headers: Vec<(String, String)>, _body: &T) -> impl std::future::Future<Output = Result<R, HttpClientError>> + Send { 
+                let called = self.called.clone();
+                let url_out = self.url.clone();
+                let headers_out = self.headers.clone();
+                let url_str = url.to_string();
+                async move { 
+                    *called.lock().unwrap() += 1;
+                    *url_out.lock().unwrap() = url_str;
+                    *headers_out.lock().unwrap() = headers;
+                    
+                    let json = r#"{"candidates":[{"content":{"parts":[{"text":"{\"message\":\"Success\",\"data\":{\"total\":1,\"summary\":[]}}"}]}}]}"#;
+                    Ok(serde_json::from_str(json).unwrap())
+                } 
+            }
+        }
+
+        let called = Arc::new(Mutex::new(0));
+        let url = Arc::new(Mutex::new(String::new()));
+        let headers = Arc::new(Mutex::new(Vec::new()));
+        
+        let client = MockHttpClientWithHeaders {
+            called: called.clone(),
+            url: url.clone(),
+            headers: headers.clone(),
+        };
+        let service = RssSummaryServiceImpl::new(client);
+
+        // test_t26: missing API key
+        std::env::remove_var("GEMINI_API_KEY");
+        std::env::set_var("SUMMARY_PROMPT", "44Kv44OV44K/"); // Some valid base64
+        
+        let res = service.fetch_summary(&Channel::default()).await;
+        assert!(res.is_err());
+        match res.unwrap_err() {
+            RssSummaryError::EnvVarError(_) => {},
+            _ => panic!("Expected EnvVarError"),
+        }
+        assert_eq!(*called.lock().unwrap(), 0);
+
+        // test_t25: with API key
+        std::env::set_var("GEMINI_API_KEY", "test-api-key");
+        std::env::remove_var("GEMINI_MODEL");
+        let res = service.fetch_summary(&Channel::default()).await;
+        assert!(res.is_ok());
+        
+        assert_eq!(*called.lock().unwrap(), 1);
+        let actual_url = url.lock().unwrap().clone();
+        assert_eq!(actual_url, "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent");
+        assert!(!actual_url.contains("key="));
+        
+        let actual_headers = headers.lock().unwrap().clone();
+        assert!(actual_headers.contains(&("x-goog-api-key".to_string(), "test-api-key".to_string())));
+    }
+
 }
