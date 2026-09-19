@@ -30,7 +30,7 @@ pub async fn handle_get_request(
     let rss_feed_url = "https://zenn.dev/feed";
 
     // ユースケースの実行
-    match use_case.execute(rss_feed_url, 10).await {
+    match use_case.execute(rss_feed_url).await {
         Ok(_) => {
             info!("Successfully processed RSS feed");
             HttpResponse::NoContent().finish()
