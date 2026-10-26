@@ -1,9 +1,5 @@
-use base64::{engine::general_purpose, Engine as _};
 use log::{error, warn};
 use rss::Channel;
-use std::env;
-use std::error::Error;
-
 
 use crate::domain::model::rss_data::RssData;
 use crate::domain::rss_summary::{RssSummaryError, RssSummaryService};
@@ -27,20 +23,6 @@ impl<T: HttpClient> RssSummaryServiceImpl<T> {
     }
 
     /// Base64エンコードされた設定を取得する
-    fn get_decoded_config() -> Result<Option<String>, Box<dyn Error>> {
-        // 環境変数が存在しない場合は None を返す
-        let encoded_config = match env::var("SUMMARY_PROMPT") {
-            Ok(val) => val,
-            Err(_) => return Ok(None),
-        };
-
-        // デコード処理
-        let decoded = general_purpose::STANDARD.decode(encoded_config)?;
-        let config_str = String::from_utf8(decoded)?;
-
-        Ok(Some(config_str))
-    }
-
     /// RSSデータをモデルに変換する
     fn convert_to_rss_data(rss_channel: &Channel) -> Vec<RssData> {
         rss_channel
@@ -54,7 +36,6 @@ impl<T: HttpClient> RssSummaryServiceImpl<T> {
             .collect()
     }
 
-
     /// Gemini APIリクエストを作成する
     fn create_gemini_request(prompt: &str, rss_data: &[RssData]) -> Result<GeminiRequest, RssSummaryError> {
         let rss_data_str = serde_json::to_string(rss_data)?;
@@ -64,35 +45,35 @@ impl<T: HttpClient> RssSummaryServiceImpl<T> {
 
     /// レスポンスからサマリーを抽出する
     fn extract_summary_from_response(response: &GeminiResponse) -> Result<ArticlesResponse, RssSummaryError> {
-        let summary = response
-            .candidates
-            .iter()
-            .filter_map(|candidate| {
-                let content = candidate.content.as_ref()?;
-                content.parts.iter().find_map(|part| {
-                    if part.thought == Some(true) {
-                        return None;
-                    }
-                    if let Some(text) = &part.text {
-                        // code blockを削除
-                        let part_text = text.replace("```json", "").replace("```", "");
-                        match serde_json::from_str::<ArticlesResponse>(&part_text) {
-                            Ok(summary) => Some(summary),
-                            Err(e) => {
-                                error!("Failed to parse summary: {}", e);
-                                None
-                            }
-                        }
-                    } else {
-                        None
-                    }
-                })
-            })
-            .next();
+        let candidate = response.candidates.first().ok_or_else(|| {
+            RssSummaryError::SummaryError("No candidates found in response".to_string())
+        })?;
 
-        summary.ok_or_else(|| {
-            RssSummaryError::SummaryError("Failed to extract summary from response".to_string())
-        })
+        if let Some(reason) = &candidate.finish_reason {
+            if reason != "STOP" {
+                let msg = if let Some(msg) = &candidate.finish_message {
+                    format!("finish_reason: {}, message: {}", reason, msg)
+                } else {
+                    format!("finish_reason: {}", reason)
+                };
+                return Err(RssSummaryError::SummaryError(msg));
+            }
+        }
+
+        let content = candidate.content.as_ref().ok_or_else(|| {
+            RssSummaryError::SummaryError("No content in candidate".to_string())
+        })?;
+
+        for part in &content.parts {
+            if part.thought == Some(true) {
+                continue;
+            }
+            if let Some(text) = &part.text {
+                return serde_json::from_str::<ArticlesResponse>(text).map_err(Into::into);
+            }
+        }
+
+        Err(RssSummaryError::SummaryError("No text parts found in response".to_string()))
     }
 }
 
@@ -102,17 +83,7 @@ impl<T: HttpClient + Send + Sync + 'static> RssSummaryService for RssSummaryServ
         let rss_data_items = Self::convert_to_rss_data(rss_channel);
 
         // プロンプトの取得
-        let prompt = match Self::get_decoded_config() {
-            Ok(Some(p)) => p,
-            Ok(None) => {
-                warn!("No summary prompt found, using empty prompt");
-                return Err(RssSummaryError::SummaryError("using empty prompt.".to_string()));
-            }
-            Err(e) => {
-                error!("Error decoding config: {}", e);
-                return Err(RssSummaryError::SummaryError(e.to_string()));
-            }
-        };
+        let prompt = crate::application::summary_prompt::SUMMARY_PROMPT;
 
         // Gemini設定の取得
         use crate::infrastructure::gemini::config::GeminiConfig;
@@ -154,111 +125,128 @@ mod tests {
     }
 
     #[test]
-    fn test_t20_extract_summary_normal_json() {
+    fn test_t51_extract_summary_propagates_json_error() {
         let response = GeminiResponse {
             candidates: vec![Candidate {
                 content: Some(Content {
                     parts: vec![Part {
-                        text: Some(r#"{"message":"Success","data":{"total":1,"summary":[{"Tech":{"category_count":1,"articles":[{"title":"t","description":"d","link":"https://example.com/a"}]}}]}}"#.to_string()),
-                        thought: None,
-                        thought_signature: None,
-                    }],
-                    role: Some("model".to_string()),
-                }),
-                finish_reason: Some("STOP".to_string()),
-                avg_logprobs: None,
-            }],
-        };
-        let res = RssSummaryServiceImpl::<MockHttpClient>::extract_summary_from_response(&response);
-        assert!(res.is_ok());
-        let res = res.unwrap();
-        assert_eq!(res.message, "Success");
-        assert_eq!(res.data.total, 1);
-        assert_eq!(res.data.summary[0].get_name(), Some("Tech".to_string()));
-    }
-
-    #[test]
-    fn test_t21_extract_summary_with_code_fence() {
-        let response = GeminiResponse {
-            candidates: vec![Candidate {
-                content: Some(Content {
-                    parts: vec![Part {
-                        text: Some("```json\n{\"message\":\"Success\",\"data\":{\"total\":0,\"summary\":[]}}\n```".to_string()),
+                        text: Some(r#"{"message":"m"}"#.to_string()),
                         thought: None,
                         thought_signature: None,
                     }],
                     role: None,
                 }),
-                finish_reason: None,
+                finish_reason: Some("STOP".to_string()),
+                finish_message: None,
                 avg_logprobs: None,
             }],
         };
         let res = RssSummaryServiceImpl::<MockHttpClient>::extract_summary_from_response(&response);
-        assert!(res.is_ok());
-        assert_eq!(res.unwrap().message, "Success");
+        assert!(res.is_err());
+        match res.unwrap_err() {
+            RssSummaryError::JsonError(msg) => assert!(msg.contains("data")),
+            _ => panic!("Expected JsonError"),
+        }
     }
 
     #[test]
-    fn test_t22_extract_summary_ignores_thought() {
+    fn test_t52_extract_summary_max_tokens_error() {
+        let response = GeminiResponse {
+            candidates: vec![Candidate {
+                content: Some(Content {
+                    parts: vec![Part {
+                        text: Some(r#"{"message":"m","data":{"total":1,"#.to_string()),
+                        thought: None,
+                        thought_signature: None,
+                    }],
+                    role: None,
+                }),
+                finish_reason: Some("MAX_TOKENS".to_string()),
+                finish_message: None,
+                avg_logprobs: None,
+            }],
+        };
+        let res = RssSummaryServiceImpl::<MockHttpClient>::extract_summary_from_response(&response);
+        assert!(res.is_err());
+        match res.unwrap_err() {
+            RssSummaryError::SummaryError(msg) => assert!(msg.contains("MAX_TOKENS")),
+            _ => panic!("Expected SummaryError"),
+        }
+    }
+
+    #[test]
+    fn test_t53_extract_summary_safety_error() {
+        let response = GeminiResponse {
+            candidates: vec![Candidate {
+                content: None,
+                finish_reason: Some("SAFETY".to_string()),
+                finish_message: Some("blocked by safety filter".to_string()),
+                avg_logprobs: None,
+            }],
+        };
+        let res = RssSummaryServiceImpl::<MockHttpClient>::extract_summary_from_response(&response);
+        assert!(res.is_err());
+        match res.unwrap_err() {
+            RssSummaryError::SummaryError(msg) => {
+                assert!(msg.contains("SAFETY"));
+                assert!(msg.contains("blocked by safety filter"));
+            },
+            _ => panic!("Expected SummaryError"),
+        }
+    }
+
+    #[test]
+    fn test_t54_extract_summary_code_fence_is_error() {
+        let response = GeminiResponse {
+            candidates: vec![Candidate {
+                content: Some(Content {
+                    parts: vec![Part {
+                        text: Some("```json\n{\"message\":\"m\",\"data\":{\"total\":0,\"highlights\":[],\"categories\":[]}}\n```".to_string()),
+                        thought: None,
+                        thought_signature: None,
+                    }],
+                    role: None,
+                }),
+                finish_reason: Some("STOP".to_string()),
+                finish_message: None,
+                avg_logprobs: None,
+            }],
+        };
+        let res = RssSummaryServiceImpl::<MockHttpClient>::extract_summary_from_response(&response);
+        assert!(res.is_err());
+        match res.unwrap_err() {
+            RssSummaryError::JsonError(_) => {},
+            _ => panic!("Expected JsonError"),
+        }
+    }
+
+    #[test]
+    fn test_t55_extract_summary_ignores_thought() {
         let response = GeminiResponse {
             candidates: vec![Candidate {
                 content: Some(Content {
                     parts: vec![
                         Part {
-                            text: Some("考え中: JSONを組み立てる".to_string()),
+                            text: None,
                             thought: Some(true),
-                            thought_signature: None,
+                            thought_signature: Some("AbC123".to_string()),
                         },
                         Part {
-                            text: Some(r#"{"message":"Success","data":{"total":0,"summary":[]}}"#.to_string()),
+                            text: Some(r#"{"message":"m","data":{"total":0,"highlights":[],"categories":[]}}"#.to_string()),
                             thought: None,
                             thought_signature: None,
                         }
                     ],
                     role: None,
                 }),
-                finish_reason: None,
+                finish_reason: Some("STOP".to_string()),
+                finish_message: None,
                 avg_logprobs: None,
             }],
         };
         let res = RssSummaryServiceImpl::<MockHttpClient>::extract_summary_from_response(&response);
         assert!(res.is_ok());
-        assert_eq!(res.unwrap().message, "Success");
-    }
-
-    #[test]
-    fn test_t23_extract_summary_empty_candidates() {
-        let response = GeminiResponse { candidates: vec![] };
-        let res = RssSummaryServiceImpl::<MockHttpClient>::extract_summary_from_response(&response);
-        assert!(res.is_err());
-        match res.unwrap_err() {
-            RssSummaryError::SummaryError(msg) => assert_eq!(msg, "Failed to extract summary from response"),
-            _ => panic!("Unexpected error type"),
-        }
-    }
-
-    #[test]
-    fn test_t24_extract_summary_invalid_json() {
-        let response = GeminiResponse {
-            candidates: vec![Candidate {
-                content: Some(Content {
-                    parts: vec![Part {
-                        text: Some("I cannot answer that.".to_string()),
-                        thought: None,
-                        thought_signature: None,
-                    }],
-                    role: None,
-                }),
-                finish_reason: None,
-                avg_logprobs: None,
-            }],
-        };
-        let res = RssSummaryServiceImpl::<MockHttpClient>::extract_summary_from_response(&response);
-        assert!(res.is_err());
-        match res.unwrap_err() {
-            RssSummaryError::SummaryError(msg) => assert_eq!(msg, "Failed to extract summary from response"),
-            _ => panic!("Unexpected error type"),
-        }
+        assert_eq!(res.unwrap().message, "m");
     }
 
     #[test]
@@ -274,6 +262,7 @@ mod tests {
                     role: None,
                 }),
                 finish_reason: None,
+                finish_message: None,
                 avg_logprobs: None,
             }],
         };
@@ -304,7 +293,7 @@ mod tests {
                     *url_out.lock().unwrap() = url_str;
                     *headers_out.lock().unwrap() = headers;
                     
-                    let json = r#"{"candidates":[{"content":{"parts":[{"text":"{\"message\":\"Success\",\"data\":{\"total\":1,\"summary\":[]}}"}]}}]}"#;
+                    let json = r#"{"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"{\"message\":\"m\",\"data\":{\"total\":1,\"highlights\":[],\"categories\":[]}}"}]}}]}"#;
                     Ok(serde_json::from_str(json).unwrap())
                 } 
             }
@@ -323,8 +312,6 @@ mod tests {
 
         // test_t26: missing API key
         std::env::remove_var("GEMINI_API_KEY");
-        std::env::set_var("SUMMARY_PROMPT", "44Kv44OV44K/"); // Some valid base64
-        
         let res = service.fetch_summary(&Channel::default()).await;
         assert!(res.is_err());
         match res.unwrap_err() {

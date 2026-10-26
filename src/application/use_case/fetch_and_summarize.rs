@@ -81,19 +81,17 @@ where
     ///
     /// # Arguments
     /// * `feed_url` - RSSフィードのURL
-    /// * `notification_limit` - 通知の制限数
     pub async fn execute(
         &self,
         feed_url: &str,
-        notification_limit: usize,
     ) -> Result<(), AppError> {
-        let result = self.execute_inner(feed_url, notification_limit).await;
+        let result = self.execute_inner(feed_url).await;
         if let Err(ref err) = result {
             let error_notification =
                 crate::application::error_notification::create_error_notification(err);
             if let Err(send_err) = self
                 .notification_service
-                .send_notifications(vec![error_notification])
+                .send_notifications(crate::application::notification::discord_limits::ValidatedNotifications(vec![error_notification]))
                 .await
             {
                 error!("Failed to send error notification: {}", send_err);
@@ -106,7 +104,6 @@ where
     async fn execute_inner(
         &self,
         feed_url: &str,
-        notification_limit: usize,
     ) -> Result<(), AppError> {
         // RSSフィードの取得
         let rss_channel = self
@@ -140,12 +137,14 @@ where
             summary: summary.clone(),
         });
 
-        // 通知データの作成と制限
-        let notifications = self.create_notifications(&summary, notification_limit);
+        // 通知データの作成と制限 (plan_digest に委譲)
+        let digest_plan = crate::application::notification::discord_limits::plan_digest(&summary);
+        
+        let notif_count = digest_plan.notifications.0.len();
 
         // 通知の送信
         self.notification_service
-            .send_notifications(notifications.clone())
+            .send_notifications(digest_plan.notifications)
             .await
             .map_err(|e| {
                 error!("Failed to send notifications: {}", e);
@@ -154,87 +153,22 @@ where
 
         // イベント発行: 通知送信
         self.event_publisher.publish(RssEvent::NotificationSent {
-            count: notifications.len(),
+            count: notif_count,
         });
 
         info!("Successfully processed RSS feed and sent notifications");
         Ok(())
     }
-
-    /// 通知データを作成し、制限する
-    ///
-    /// # Arguments
-    /// * `summary` - RSSサマリー
-    /// * `limit` - 制限数
-    fn create_notifications(
-        &self,
-        summary: &ArticlesResponse,
-        limit: usize,
-    ) -> Vec<Notification> {
-        let notifications = summary
-            .data
-            .summary
-            .iter()
-            .flat_map(|category| {
-                // カテゴリ名を取得
-                category
-                    .category_map
-                    .keys()
-                    .next()
-                    .map(|category_name| {
-                        // カテゴリ内の記事を取得
-                        category
-                            .category_map
-                            .values()
-                            .map(move |category_details| {
-                                let notification_fields = category_details
-                                    .articles
-                                    .iter()
-                                    .map(|article| {
-                                        let value_string = format!(
-                                            "{}\n[この記事を読む]({})",
-                                            article.description, article.link
-                                        );
-                                        NotificationField {
-                                            name: article.title.clone(),
-                                            value: value_string
-                                        }
-                                        // Notification {
-                                        //     title: category_name.clone(),
-                                        //     fields: vec![crate::domain::notification::NotificationField {
-                                        //         name: article.title.clone(),
-                                        //         value: value_string,
-                                        //     }],
-                                        // }
-                                    })
-                                    .collect::<Vec<_>>();
-                                
-                                Notification {
-                                    title: category_name.clone(),
-                                    fields: notification_fields
-                                }
-                            })
-                    })
-                    .into_iter()
-                    .flatten()
-            })
-            .collect::<Vec<Notification>>();
-
-        // 通知データの制限
-        if notifications.len() > limit {
-            notifications[..limit].to_vec()
-        } else {
-            notifications
-        }
-    }
 }
+
+
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use async_trait::async_trait;
     use crate::domain::model::rss_data::RssData;
-    use crate::domain::model::rss_summary::{Article, ArticlesData, Category, CategoryDetails};
+    use crate::domain::model::rss_summary::{Article, ArticlesData, Category, Highlight};
     use crate::domain::notification::NotificationError;
     use crate::domain::repository::rss_repository::RssRepositoryError;
     use rss::Channel;
@@ -314,9 +248,9 @@ mod tests {
     impl NotificationService for MockNotificationService {
         async fn send_notifications(
             &self,
-            notifications: Vec<Notification>,
+            notifications: crate::application::notification::discord_limits::ValidatedNotifications,
         ) -> Result<(), NotificationError> {
-            self.calls.lock().unwrap().push(notifications);
+            self.calls.lock().unwrap().push(notifications.0);
             self.responses
                 .lock()
                 .unwrap()
@@ -344,24 +278,19 @@ mod tests {
     }
 
     fn create_dummy_articles_response() -> ArticlesResponse {
-        let mut category_map = HashMap::new();
-        category_map.insert(
-            "Tech".to_string(),
-            CategoryDetails {
-                category_count: Some(1),
-                articles: vec![Article {
-                    title: "Test Article".to_string(),
-                    description: "Description".to_string(),
-                    link: "https://example.com/article".to_string(),
-                }],
-            },
-        );
-
         ArticlesResponse {
             message: "Success".to_string(),
             data: ArticlesData {
                 total: 1,
-                summary: vec![Category { category_map }],
+                highlights: vec![],
+                categories: vec![Category {
+                    name: "Tech".to_string(),
+                    articles: vec![Article {
+                        title: "Test Article".to_string(),
+                        summary: "Description".to_string(),
+                        link: "https://example.com/article".to_string(),
+                    }],
+                }],
             },
         }
     }
@@ -374,12 +303,12 @@ mod tests {
         let event = MockEventPublisher::new();
 
         let use_case = FetchAndSummarizeUseCase::new(repo, summary, notif, event);
-        let result = use_case.execute("https://example.com/feed", 10).await;
+        let result = use_case.execute("https://example.com/feed").await;
 
         assert!(result.is_ok());
         let calls = use_case.notification_service.get_calls();
         assert_eq!(calls.len(), 1, "send_notifications should be called exactly once for articles");
-        assert_eq!(calls[0][0].title, "Tech");
+        assert!(calls[0][0].title.contains("Zennトレンド"));
     }
 
     #[actix_web::test]
@@ -390,7 +319,7 @@ mod tests {
         let event = MockEventPublisher::new();
 
         let use_case = FetchAndSummarizeUseCase::new(repo, summary, notif, event);
-        let result = use_case.execute("https://example.com/feed", 10).await;
+        let result = use_case.execute("https://example.com/feed").await;
 
         assert!(matches!(result, Err(AppError::RssError(_))));
         let calls = use_case.notification_service.get_calls();
@@ -408,7 +337,7 @@ mod tests {
         let event = MockEventPublisher::new();
 
         let use_case = FetchAndSummarizeUseCase::new(repo, summary, notif, event);
-        let result = use_case.execute("https://example.com/feed", 10).await;
+        let result = use_case.execute("https://example.com/feed").await;
 
         assert!(matches!(result, Err(AppError::SummaryError(_))));
         let calls = use_case.notification_service.get_calls();
@@ -429,12 +358,12 @@ mod tests {
         let event = MockEventPublisher::new();
 
         let use_case = FetchAndSummarizeUseCase::new(repo, summary, notif, event);
-        let result = use_case.execute("https://example.com/feed", 10).await;
+        let result = use_case.execute("https://example.com/feed").await;
 
         assert!(matches!(result, Err(AppError::NotificationError(_))));
         let calls = use_case.notification_service.get_calls();
         assert_eq!(calls.len(), 2, "send_notifications should be called twice (article + error)");
-        assert_eq!(calls[0][0].title, "Tech");
+        assert!(calls[0][0].title.contains("Zennトレンド"));
         assert_eq!(calls[1][0].title, "⚠️ RSS処理でエラーが発生しました");
         assert_eq!(calls[1][0].fields[0].name, "通知送信エラー");
     }
@@ -450,7 +379,7 @@ mod tests {
         let event = MockEventPublisher::new();
 
         let use_case = FetchAndSummarizeUseCase::new(repo, summary, notif, event);
-        let result = use_case.execute("https://example.com/feed", 10).await;
+        let result = use_case.execute("https://example.com/feed").await;
 
         // エラー通知失敗でも panic せず、元の RssError が返ること（P2不変条件）
         match result {
@@ -468,7 +397,7 @@ mod tests {
         let event = MockEventPublisher::new();
 
         let use_case = FetchAndSummarizeUseCase::new(repo, summary, notif, event);
-        let _ = use_case.execute("https://example.com/feed", 10).await;
+        let _ = use_case.execute("https://example.com/feed").await;
 
         let calls = use_case.notification_service.get_calls();
         assert_eq!(calls.len(), 1);
@@ -484,7 +413,7 @@ mod tests {
         let notif = MockNotificationService::new(vec![Ok(())]);
         let event = MockEventPublisher::new();
         let use_case = FetchAndSummarizeUseCase::new(repo, summary, notif, event);
-        let _ = use_case.execute("https://example.com/feed", 10).await;
+        let _ = use_case.execute("https://example.com/feed").await;
         assert!(use_case.notification_service.get_calls().len() <= 2);
 
         // 記事通知エラー時: 2回（記事1回 + エラー1回）
@@ -496,7 +425,67 @@ mod tests {
         ]);
         let event = MockEventPublisher::new();
         let use_case = FetchAndSummarizeUseCase::new(repo, summary, notif, event);
-        let _ = use_case.execute("https://example.com/feed", 10).await;
+        let _ = use_case.execute("https://example.com/feed").await;
         assert_eq!(use_case.notification_service.get_calls().len(), 2);
+    }
+
+    #[actix_web::test]
+    async fn test_t36_empty_notifications_still_calls_service() {
+        let repo = MockRssRepository::new(Ok(Channel::default()));
+        let mut empty_response = create_dummy_articles_response();
+        empty_response.data.categories.clear();
+        empty_response.data.total = 0;
+        
+        let summary = MockRssSummaryService::new(Ok(empty_response));
+        let notif = MockNotificationService::new(vec![Ok(())]);
+        let event = MockEventPublisher::new();
+
+        let use_case = FetchAndSummarizeUseCase::new(repo, summary, notif, event);
+        let result = use_case.execute("https://example.com/feed").await;
+
+        assert!(result.is_ok());
+        let calls = use_case.notification_service.get_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].len(), 1, "Only header");
+        assert_eq!(calls[0][0].title, "📰 Zennトレンド 0件");
+    }
+
+    #[actix_web::test]
+    async fn test_t38_execute_does_not_truncate_but_relies_on_plan_digest() {
+        let repo = MockRssRepository::new(Ok(Channel::default()));
+        
+        let mut categories = Vec::new();
+        for i in 0..12 {
+            categories.push(crate::domain::model::rss_summary::Category {
+                name: format!("C{}", i),
+                articles: vec![crate::domain::model::rss_summary::Article {
+                    title: "A".to_string(),
+                    summary: "S".to_string(),
+                    link: "L".to_string(),
+                }],
+            });
+        }
+        
+        let mut response = create_dummy_articles_response();
+        response.data.categories = categories;
+        response.data.total = 12;
+        
+        let summary = MockRssSummaryService::new(Ok(response));
+        let notif = MockNotificationService::new(vec![Ok(())]);
+        let event = MockEventPublisher::new();
+
+        let use_case = FetchAndSummarizeUseCase::new(repo, summary, notif, event);
+        let result = use_case.execute("https://example.com/feed").await;
+
+        assert!(result.is_ok());
+        let calls = use_case.notification_service.get_calls();
+        assert_eq!(calls.len(), 1);
+        
+        // plan_digest should have capped it at 10 embeds, skipped 2
+        let sent_notifs = &calls[0];
+        assert_eq!(sent_notifs.len(), 10);
+        
+        // Header should contain skipped warning
+        assert!(sent_notifs[0].description.as_ref().unwrap().contains("⚠️ Discordの制限により3件を除外しました"));
     }
 }

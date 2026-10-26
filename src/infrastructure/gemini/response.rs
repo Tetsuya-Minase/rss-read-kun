@@ -12,6 +12,7 @@ pub struct GeminiResponse {
 pub struct Candidate {
     pub content: Option<Content>,
     pub finish_reason: Option<String>,
+    pub finish_message: Option<String>,
     pub avg_logprobs: Option<f64>,
 }
 
